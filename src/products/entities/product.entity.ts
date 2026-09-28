@@ -27,4 +27,15 @@ export class Product {
 
   @CreateDateColumn()
   createdAt!: Date;
+
+  // ===================================================================
+  // RELACIONES — standalone en Rama 2-4 (intencional).
+  // Product no tiene @OneToMany a OrderItem para mantenerlo desacoplado.
+  // OrderItem ya tiene @ManyToOne(() => Product, { eager: true }),
+  // así al traer una orden ves el producto sin que Product conozca sus items.
+  // Si quisieras bidireccional (ver en qué órdenes aparece un producto):
+  //   @OneToMany(() => OrderItem, (oi) => oi.product)
+  //   orderItems: OrderItem[];
+  // Se deja unidireccional para didáctica y evitar acoplar módulos.
+  // ===================================================================
 }
