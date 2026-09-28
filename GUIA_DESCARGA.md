@@ -1,113 +1,111 @@
-# Guía de Descarga — Main / Rama 4 Filtros (sencillo, didáctico)
+# Guía de Descarga — Main (Proyecto Completo)
 
-> **Main = Rama 4 = Rama 3 + filtros simples vía query params.** Sin paginación ni complejidad. Ramas: `rama-1-iniciacion`, `rama-2-productos`, `rama-3-ordenes`, `rama-4-filtros`/`main`. **Diagrama BD:** [`docs/diagrama-bd.drawio`](./docs/diagrama-bd.drawio) (abrir en https://app.diagrams.net).
-
-**Objetivo didáctico:** aprender a filtrar listados con `@Query()` + DTO + `QueryBuilder` de forma normal y sencilla.
+> **Todo está en `main`** — antes se separó por ramas por didáctica, ahora todo está aquí unificado y bien explicado. **Diagrama BD:** [`docs/diagrama-bd.drawio`](./docs/diagrama-bd.drawio)
 
 ## Requisitos
+
 Node 20+, npm 10+, Git, Postman opcional.
 
-## 1. Clonar rama 4
+## 1. Clonar (main)
+
 ```bash
-git clone -b rama-4-filtros https://github.com/cdtello/backend-nestjs-seed.git
+git clone https://github.com/cdtello/backend-nestjs-seed.git
 cd backend-nestjs-seed
-# o
-git clone https://github.com/cdtello/backend-nestjs-seed.git && cd backend-nestjs-seed && git checkout rama-4-filtros
 ```
 
 ## 2. Instalar y arrancar
+
 ```bash
 npm install
 cp .env.example .env
+cat .env  # DB_TYPE=sqlite crea data/app.sqlite solo
 npm run start:dev
 # Nest application successfully started → http://localhost:3000
 ```
 
-## 3. Datos previos
-Crea 1 usuario y 2-3 productos para probar filtros/órdenes (ver ramas previas). Colección Postman ya incluye datos de ejemplo.
+Otros: `npm run build`, `npm run start:prod`, `npm run lint`, `npm run format`. Para resetear BD: `rm data/app.sqlite` y reiniciar.
 
-## 4. Probar Filtros Products (nuevo sencillo)
+## 3. Probar Users (base)
 
-**Cómo funciona (didáctico):**
-- Controller: `src/products/controllers/products.controller.ts:24` → `@Get() findAll(@Query() filter: FilterProductDto)`
-- DTO: `src/products/dto/filter-product.dto.ts:1` → `@IsOptional()` + `@Type(()=>Number)` para que `?minPrice=50` llegue como `number`
-- Service: `src/products/services/products.service.ts:22` → `createQueryBuilder('product').where('isActive=true')` + `andWhere` condicionales + `LOWER(name) LIKE` para case-insensitive
-
-**Endpoints con ejemplos:**
 ```bash
-# Sin filtros (comportamiento Rama 2-3, lista todo activo)
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" \
+  -d '{"id":"1234567890","name":"Ana","email":"ana@seed.local","age":25,"phone":"+573001234567"}'
+curl http://localhost:3000/users
+curl http://localhost:3000/users/1234567890
+curl -X PUT http://localhost:3000/users/1234567890 -H "Content-Type: application/json" -d '{"age":26}'
+curl -X DELETE http://localhost:3000/users/1234567890  # soft
+```
+
+Postman → carpeta **Users** (5 requests).
+
+## 4. Probar Products (standalone + filtros)
+
+**Cómo funciona (ver código):**
+- `src/products/dto/filter-product.dto.ts` — DTO con `@IsOptional()` + `@Type(()=>Number)`
+- `src/products/controllers/products.controller.ts` — `@Get() findAll(@Query() filter: FilterProductDto)`
+- `src/products/services/products.service.ts` — `QueryBuilder` con `where isActive` + `andWhere` para `name` (`LOWER LIKE`), `price` y `stock`
+
+```bash
+curl -X POST http://localhost:3000/products -H "Content-Type: application/json" \
+  -d '{"name":"Proteína Whey","price":129.9,"stock":50}'
+
 curl http://localhost:3000/products
-
-# Por nombre parcial (whey, proteína, etc.)
-curl "http://localhost:3000/products?name=whey"
-curl "http://localhost:3000/products?name=PROTE"  # case-insensitive
-
-# Por rango de precio
+curl "http://localhost:3000/products?name=whey"  # case-insensitive
 curl "http://localhost:3000/products?minPrice=50&maxPrice=200"
-curl "http://localhost:3000/products?minPrice=100"
-
-# Por stock
 curl "http://localhost:3000/products?minStock=10"
-curl "http://localhost:3000/products?maxStock=5"
-
-# Combinado (intersección AND)
-curl "http://localhost:3000/products?name=prote&minPrice=50&maxPrice=200&minStock=10"
-
-# Validación: si mandas letras en número → 400
-curl "http://localhost:3000/products?minPrice=abc"  # Bad Request
+curl "http://localhost:3000/products?name=prote&minPrice=50&maxStock=100"
 ```
 
-Postman → carpeta **Products** → 3 requests nuevas: *Filtrar por nombre*, *Filtrar por rango precio*, *Filtrar por stock y nombre*.
+Postman → carpeta **Products** (8 requests, 3 de filtros).
 
-## 5. Probar Filtros Orders (nuevo sencillo)
+## 5. Probar Orders (tienda con relaciones + transacción)
 
-**Cómo funciona:**
-- DTO: `src/orders/dto/filter-order.dto.ts:1` → `status` `@IsEnum(OrderStatus)`, `userId` `@Matches(/^\d{5,20}$/)`
-- Service: `src/orders/services/orders.service.ts:17` → `createQueryBuilder('order')` + `leftJoinAndSelect` + `andWhere` para `status`/`userId`
-- Controller: `src/orders/controllers/orders.controller.ts:24` → `@Get() findAll(@Query() filter: FilterOrderDto)`
+**Diagrama:** `User 1—N Order 1—N OrderItem N—1 Product` (ver `docs/diagrama-bd.drawio` y `src/orders/entities/` con comentarios al final).
+
+**Cómo funciona `POST /orders` (`src/orders/services/orders.service.ts`):**
+1. `QueryRunner.startTransaction()`
+2. Valida `User` activo, cada `Product` activo y `stock >= quantity`
+3. `total += price*quantity`, `stock -= quantity`
+4. `create(Order)` con `items` + `save` (cascade) → `commit` o `rollback`
 
 ```bash
-# Sin filtros, lista todo
+# Necesitas userId y productId previos
+curl -X POST http://localhost:3000/orders -H "Content-Type: application/json" \
+  -d '{"userId":"1234567890","items":[{"productId":"<uuid>","quantity":2}]}'
+# → 201 { id, total, status:PENDING, items:[{quantity, unitPrice, product}] }
+
 curl http://localhost:3000/orders
-
-# Por estado
-curl "http://localhost:3000/orders?status=PENDING"
-curl "http://localhost:3000/orders?status=PAID"
-curl "http://localhost:3000/orders?status=CANCELLED"
-
-# Por usuario
-curl "http://localhost:3000/orders?userId=1234567890"
-
-# Combinado
-curl "http://localhost:3000/orders?status=PENDING&userId=1234567890"
-
-# Sigue funcionando el endpoint dedicado (URL limpia)
+curl http://localhost:3000/orders/<orderId>
 curl http://localhost:3000/orders/user/1234567890
-
-# Validación enum → 400
-curl "http://localhost:3000/orders?status=INVALID"
+curl -X PUT http://localhost:3000/orders/<orderId> -H "Content-Type: application/json" -d '{"status":"PAID"}'
+curl -X PUT http://localhost:3000/orders/<orderId>/cancel  # restaura stock
 ```
 
-Postman → carpeta **Orders** → 3 requests nuevas: *Filtrar por status*, *Filtrar por usuario*, *Filtrar por status y usuario*.
+**Filtros Orders** (`src/orders/dto/filter-order.dto.ts` + `QueryBuilder`):
 
-## 6. Estructura final Rama 4
+```bash
+curl "http://localhost:3000/orders?status=PENDING"
+curl "http://localhost:3000/orders?userId=1234567890"
+curl "http://localhost:3000/orders?status=PENDING&userId=1234567890"
+```
+
+Postman → carpeta **Orders** (11 requests).
+
+## 6. Estructura Final
+
 ```
 src/
-  products/
-    dto/filter-product.dto.ts   # query params productos
-    services/products.service.ts # QueryBuilder con filtros
-    controllers/products.controller.ts # @Query()
-  orders/
-    dto/filter-order.dto.ts
-    services/orders.service.ts
-    controllers/orders.controller.ts
-postman/backend-nestjs-seed.postman_collection.json # Users+Products+Orders con filtros
+  main.ts / app.module.ts / config/env.validation.ts
+  users/    # CRUD Users
+  products/ # CRUD Products + filtros
+  orders/   # Orders + OrderItem con relaciones + filtros
+postman/backend-nestjs-seed.postman_collection.json
+docs/diagrama-bd.drawio
 ```
 
-## 7. Comandos
+## 7. Verificación
+
 ```bash
 npm run build && npm run lint && npm run start:dev
-# Para resetear DB: rm data/app.sqlite y reiniciar
+# Probar en Postman las 3 carpetas. Si todo da 201/200 y filtros funcionan, está OK.
 ```
-
-Si `GET /products?name=whey` y `GET /orders?status=PENDING` filtran correctamente y `GET /products` sin params sigue listando todo, la rama 4 quedó correcta.

@@ -1,43 +1,68 @@
-# Backend NestJS Seed — Main (Tienda completa + Filtros)
+# Backend NestJS Seed — Main (Proyecto Completo)
 
-> **Rama principal `main` = versión terminada** (igual a `rama-4-filtros`). Ramas didácticas: `rama-1-iniciacion` (users), `rama-2-productos`, `rama-3-ordenes` (relaciones), `rama-4-filtros` (actual). Guía en [`GUIA_DESCARGA.md`](./GUIA_DESCARGA.md) · Postman en [`postman/backend-nestjs-seed.postman_collection.json`](./postman/backend-nestjs-seed.postman_collection.json) · **Diagrama BD editable:** [`docs/diagrama-bd.drawio`](./docs/diagrama-bd.drawio)
+> **Todo está aquí en `main`** — evolución didáctica consolidada. Antes se trabajó por ramas (`rama-1` users → `rama-2` products → `rama-3` orders → `rama-4` filtros), ahora todo está unificado y bien explicado aquí. Guía paso a paso en [`GUIA_DESCARGA.md`](./GUIA_DESCARGA.md) · Postman en [`postman/backend-nestjs-seed.postman_collection.json`](./postman/backend-nestjs-seed.postman_collection.json) · **Diagrama BD editable:** [`docs/diagrama-bd.drawio`](./docs/diagrama-bd.drawio)
 
-Seed NestJS 11 + TypeORM. **Main demuestra** tienda completa + **filtros simples sin complejidad**: `@Query()` + DTO + `QueryBuilder` + relaciones + transacción.
+Seed NestJS 11 + TypeORM + SQLite/Postgres. Demuestra de forma progresiva y didáctica: **CRUD standalone, relaciones 1—N, tabla pivote con datos, transacciones y filtros simples con QueryBuilder**.
 
-## Qué aprende en esta rama (didáctico, sencillo)
+## Qué aprende el estudiante
 
-- **`@Query()` + DTO validado:** cómo Nest + `ValidationPipe(transform:true)` convierte `?minPrice=50` (string) a `number` con `@Type(()=>Number)` y valida
-- **`QueryBuilder` básico:** `where`, `andWhere`, `LIKE` case-insensitive con `LOWER()`, rangos `>=`/`<=`, `orderBy`
-- **Filtros sin paginación ni sorting complejo:** solo `where` opcional, ideal para clase inicial
-- **Por qué no `findBy` simple:** con filtros opcionales es más claro construir la query paso a paso que armar un `FindOptionsWhere` dinámico
+1. **Base CRUD** (`users`, `products` standalone) — `Repository`, `ValidationPipe`, DTOs con `class-validator`
+2. **Relaciones TypeORM** — `@ManyToOne`, `@OneToMany`, `@JoinColumn`, `cascade`, `eager`, `onDelete` (ver `src/orders/entities/`)
+3. **Tabla pivote con datos** — `order_items` guarda `quantity` + `unitPrice` snapshot (por qué no `ManyToMany` directo)
+4. **Transacción atómica** — `QueryRunner` en `OrdersService.create()` para validar stock, descontar, calcular total y crear orden todo o nada
+5. **Filtros simples** — `@Query()` + DTO validado + `QueryBuilder` con `where`/`andWhere`/`LIKE`
 
 ## Stack
-NestJS 11 + TypeORM + SQLite/Postgres + `class-validator`/`class-transformer`. `synchronize:true` dev.
 
-## Estructura
+- NestJS 11 + TypeScript 5.7
+- TypeORM 0.3 + `sqlite3` / `pg`
+- `@nestjs/config` + validación manual en `src/config/env.validation.ts`
+- `class-validator` / `class-transformer` + `ValidationPipe({ whitelist, forbidNonWhitelisted, transform })`
+- `synchronize:true` en dev (en prod usar migraciones)
+
+## Estructura Final (main)
 
 ```
 src/
-  main.ts
-  app.module.ts           # UsersModule + ProductsModule + OrdersModule
-  users/                  # Rama 1
-  products/               # Rama 2 + Rama 4 filtros
-    products.module.ts / controllers / services / entities / dto
-    dto/filter-product.dto.ts   # ← NUEVO: name, minPrice, maxPrice, minStock, maxStock
-  orders/                 # Rama 3 + Rama 4 filtros
-    orders.module.ts / controllers / services / entities / dto
-    dto/filter-order.dto.ts     # ← NUEVO: status, userId
-data/app.sqlite
-docs/diagrama-bd.drawio  # ← diagrama ER editable en draw.io (ver sección Diagrama)
+  main.ts                         # bootstrap + ValidationPipe global
+  app.module.ts                   # ConfigModule + TypeOrmModule + UsersModule + ProductsModule + OrdersModule
+  config/env.validation.ts       # valida PORT, DB_TYPE, etc.
+  users/                          # CRUD Users (ejemplo base)
+    users.module.ts
+    controllers/users.controller.ts
+    services/users.service.ts
+    entities/user.entity.ts       # PK varchar(20) 5-20 dígitos, sin relaciones (ver comentario al final)
+    dto/create-user.dto.ts
+    dto/update-user.dto.ts
+  products/                       # CRUD Products (standalone)
+    products.module.ts
+    controllers/products.controller.ts  # @Query() filtros
+    services/products.service.ts        # QueryBuilder con filtros
+    entities/product.entity.ts          # uuid, price decimal, stock, sin relaciones
+    dto/create-product.dto.ts
+    dto/update-product.dto.ts
+    dto/filter-product.dto.ts           # name, minPrice, maxPrice, minStock, maxStock
+  orders/                         # Tienda con relaciones (didáctico)
+    orders.module.ts
+    controllers/orders.controller.ts    # @Query() filtros + /user/:userId
+    services/orders.service.ts          # transacción + filtros
+    entities/order.entity.ts            # FK userId + @ManyToOne(User) + @OneToMany(OrderItem)
+    entities/order-item.entity.ts       # FKs orderId/productId + @ManyToOne + quantity/unitPrice
+    dto/create-order.dto.ts             # @ValidateNested items
+    dto/update-order.dto.ts
+    dto/filter-order.dto.ts             # status, userId
+postman/backend-nestjs-seed.postman_collection.json
+docs/diagrama-bd.drawio
+data/app.sqlite                   # creado auto, ignorado por git
 ```
 
-## Diagrama de Base de Datos (para clase)
+Relaciones al final de cada `entity` con comentario explicando cada una (ver `order.entity.ts` y `order-item.entity.ts`).
 
-**Archivo editable draw.io:** [`docs/diagrama-bd.drawio`](./docs/diagrama-bd.drawio)
+## Diagrama BD (para clase)
 
-Abrir en https://app.diagrams.net → File → Open → selecciona `diagrama-bd.drawio`. También lo puedes abrir directo desde VS Code con extensión Draw.io.
+**Archivo editable:** [`docs/diagrama-bd.drawio`](./docs/diagrama-bd.drawio) — abrir en https://app.diagrams.net → File → Open. También abre en VS Code con extensión Draw.io.
 
-**Preview rápido (Mermaid) — mismo ER:**
+**Preview Mermaid:**
 
 ```mermaid
 erDiagram
@@ -77,65 +102,93 @@ erDiagram
     }
 ```
 
-Tablas: `users`, `products`, `orders`, `order_items` (pivote con `quantity` + `unitPrice` snapshot, `eager` product, `CASCADE` al borrar orders).
-
-## Guía rápida (Main / Rama 4)
+## Guía Rápida (main)
 
 ```bash
 git clone https://github.com/cdtello/backend-nestjs-seed.git
-# o rama específica
-git clone -b rama-4-filtros https://github.com/cdtello/backend-nestjs-seed.git
-cd backend-nestjs-seed && npm install && cp .env.example .env && npm run start:dev
-# http://localhost:3000
-# Postman: importar postman/backend-nestjs-seed.postman_collection.json
+cd backend-nestjs-seed
+npm install
+cp .env.example .env   # revisa PORT, DB_TYPE=sqlite por defecto
+npm run start:dev       # http://localhost:3000
 ```
 
-## Módulos previos (resumen)
+Postman: Importar `postman/backend-nestjs-seed.postman_collection.json` (carpetas **Users / Products / Orders** con filtros).
 
-**Users:** `POST/GET/GET:id/PUT/DELETE` soft. **Products:** `POST/GET/GET:id/PUT/DELETE` soft (uuid). **Orders:** `POST /orders` con transacción + `GET /orders`, `GET /orders/:id`, `GET /orders/user/:userId`, `PUT /orders/:id`, `PUT /orders/:id/cancel`, `DELETE /orders/:id`.
+## Configuración (.env)
 
-## Novedad Rama 4: Filtros simples
+`.env` no se versiona, ver `.env.example`.
 
-**Products — `GET /products` con query opcional:**
-| Query | Tipo | Ejemplo | Efecto |
-|---|---|---|---|
-| `name` | string | `?name=whey` | `LOWER(name) LIKE %whey%` case-insensitive |
-| `minPrice` | number | `?minPrice=50` | `price >= 50` |
-| `maxPrice` | number | `?maxPrice=200` | `price <= 200` |
-| `minStock` | int | `?minStock=10` | `stock >= 10` |
-| `maxStock` | int | `?maxStock=100` | `stock <= 100` |
+SQLite (default):
+```dotenv
+DB_TYPE=sqlite
+DB_DATABASE=data/app.sqlite
+DB_SYNCHRONIZE=true
+DB_LOGGING=false
+```
 
-Combinables: `GET /products?name=prote&minPrice=50&maxPrice=200&minStock=5`
+Postgres:
+```dotenv
+DB_TYPE=postgres
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=clave
+DB_DATABASE=app_db
+```
 
-Código: `src/products/dto/filter-product.dto.ts:1` + `src/products/services/products.service.ts:22` (QueryBuilder) + `src/products/controllers/products.controller.ts:24` (`@Query() filter: FilterProductDto`).
+Validación en `src/config/env.validation.ts` — si falta algo en postgres, la app no arranca y muestra error claro.
+
+## Módulos y Endpoints
+
+### Users — CRUD con soft delete
+| `POST` | `/users` | `GET` | `/users` | `GET` | `/users/:id` | `PUT` | `/users/:id` | `DELETE` | `/users/:id` |
+Entidad `User`: `id` 5-20 dígitos único, `email` único lowercase, `name` 2-100, `age` 0-130, `phone` +? 7-15.
+
+```bash
+curl -X POST http://localhost:3000/users -H "Content-Type: application/json" \
+  -d '{"id":"1234567890","name":"Ana","email":"ana@seed.local","age":25,"phone":"+573001234567"}'
+```
+
+### Products — CRUD standalone + filtros
+| `POST` | `/products` | `GET` | `/products` | `GET` | `/products/:id` | `PUT` | `/products/:id` | `DELETE` | `/products/:id` |
+Entidad `Product`: `id` uuid, `name` 2-120, `price` decimal, `stock` int.
+
+Filtros `GET /products?name=whey&minPrice=50&maxPrice=200&minStock=10&maxStock=100` → `LOWER(name) LIKE`, rangos. Ver `filter-product.dto.ts`.
 
 ```bash
 curl "http://localhost:3000/products?name=whey"
 curl "http://localhost:3000/products?minPrice=50&maxPrice=200"
-curl "http://localhost:3000/products?name=prote&minStock=10&maxStock=100"
 ```
 
-**Orders — `GET /orders` con query opcional:**
-| Query | Tipo | Ejemplo |
-|---|---|---|
-| `status` | enum `PENDING/PAID/CANCELLED` | `?status=PENDING` |
-| `userId` | 5-20 dígitos | `?userId=1234567890` |
+### Orders — Tienda con relaciones + transacción + filtros
 
-Combinables: `GET /orders?status=PENDING&userId=1234567890`
+Diagrama: `User 1—N Order 1—N OrderItem N—1 Product`
 
-Código: `src/orders/dto/filter-order.dto.ts:1` + `src/orders/services/orders.service.ts:17` + `src/orders/controllers/orders.controller.ts:24`.
+| `POST` | `/orders` | `GET` | `/orders` | `GET` | `/orders/:id` | `GET` | `/orders/user/:userId` | `PUT` | `/orders/:id` | `PUT` | `/orders/:id/cancel` | `DELETE` | `/orders/:id` |
+
+Filtros `GET /orders?status=PENDING&userId=1234567890`.
+
+Transacción `OrdersService.create()` → valida user/product/stock, `total = Σ price*quantity`, descuenta `stock`, crea `Order` + `OrderItem` con `cascade`, `commit`/`rollback`.
 
 ```bash
+curl -X POST http://localhost:3000/orders -H "Content-Type: application/json" \
+  -d '{"userId":"1234567890","items":[{"productId":"<uuid>","quantity":2}]}'
+# → 201 { total, status:PENDING, items:[{quantity, unitPrice, product}] }
+
 curl "http://localhost:3000/orders?status=PENDING"
 curl "http://localhost:3000/orders?userId=1234567890"
-curl "http://localhost:3000/orders?status=PENDING&userId=1234567890"
-# Sigue funcionando GET /orders/user/:userId para URL limpia
-curl http://localhost:3000/orders/user/1234567890
 ```
 
-**Validación:** si mandas `?minPrice=abc` o `?status=INVALID` → `400` por `ValidationPipe`. Si no mandas nada, lista todo (comportamiento previo).
+## Postman
+
+Colección única con 3 carpetas pegadas por módulo (Users 5, Products 8, Orders 11). Variables `baseUrl`, `userId`, `productId`, `orderId` — guarda el `id` retornado de Crear para los siguientes.
 
 ## Scripts
+
 ```bash
-npm run format && npm run lint && npm run build && npm run start:dev
+npm run format
+npm run lint
+npm run build
+npm run start:dev
+npm run start:prod
 ```
