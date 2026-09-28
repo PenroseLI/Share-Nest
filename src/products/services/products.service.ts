@@ -7,13 +7,19 @@
  * Patrón: Controller recibe @Body/@Param/@Query → Service piensa y valida →
  * Repository guarda en la tabla products.
  *
- * Filtros (Rama 4) usan QueryBuilder para armar la consulta solo con
- * los filtros que el usuario mandó por ?name=...&minPrice=...
+ * Filtros usan SOLO Repository (sin QueryBuilder) — didáctico simple con TypeORM.
  */
 
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import {
+  Between,
+  FindOptionsWhere,
+  LessThanOrEqual,
+  Like,
+  MoreThanOrEqual,
+  Repository,
+} from 'typeorm';
 import { CreateProductDto } from '../dto/create-product.dto';
 import { FilterProductDto } from '../dto/filter-product.dto';
 import { UpdateProductDto } from '../dto/update-product.dto';
@@ -39,48 +45,48 @@ export class ProductsService {
   }
 
   /**
-   * Listar con filtros opcionales — didáctico QueryBuilder
+   * Listar con filtros opcionales — SOLO con Repository (sin QueryBuilder)
    * Ejemplos:
    *   GET /products                          → lista todo activo
-   *   GET /products?name=whey               → LIKE %whey% case-insensitive
+   *   GET /products?name=whey               → LIKE %whey% (contiene, case-insensitive en sqlite)
    *   GET /products?minPrice=50&maxPrice=200 → rango precio
    *   GET /products?minStock=10             → stock >=10
    *
-   * ¿Por qué QueryBuilder y no findBy? Con filtros opcionales es más claro
-   * ir añadiendo andWhere solo si el filtro viene, que armar un objeto where dinámico.
+   * Usamos FindOptionsWhere y operadores de TypeORM: Like, Between, MoreThanOrEqual, LessThanOrEqual.
+   * Todo es Repository.find(), nada de query raro.
    */
   async findAll(filter?: FilterProductDto): Promise<Product[]> {
-    // Empezamos con "donde isActive=true" (soft delete)
-    const qb = this.productsRepository.createQueryBuilder('product');
-    qb.where('product.isActive = :isActive', { isActive: true });
+    // Empezamos con el filtro base: solo activos (soft delete)
+    const where: FindOptionsWhere<Product> = { isActive: true };
 
-    // Si mandaron ?name=whey, filtra con LIKE insensible a mayúsculas
-    // En sqlite no hay ILIKE, por eso usamos LOWER()
+    // Filtro por nombre — LIKE %whey% (si mandan ?name=whey)
     if (filter?.name) {
-      qb.andWhere('LOWER(product.name) LIKE LOWER(:name)', {
-        name: `%${filter.name}%`, // % significa "contiene"
-      });
+      where.name = Like(`%${filter.name}%`);
     }
 
-    // Filtros numéricos — solo si vienen en la URL
-    if (filter?.minPrice !== undefined) {
-      qb.andWhere('product.price >= :minPrice', { minPrice: filter.minPrice });
-    }
-    if (filter?.maxPrice !== undefined) {
-      qb.andWhere('product.price <= :maxPrice', { maxPrice: filter.maxPrice });
-    }
-    if (filter?.minStock !== undefined) {
-      qb.andWhere('product.stock >= :minStock', { minStock: filter.minStock });
-    }
-    if (filter?.maxStock !== undefined) {
-      qb.andWhere('product.stock <= :maxStock', { maxStock: filter.maxStock });
+    // Filtro por precio — combinamos min y max
+    if (filter?.minPrice !== undefined && filter?.maxPrice !== undefined) {
+      where.price = Between(filter.minPrice, filter.maxPrice);
+    } else if (filter?.minPrice !== undefined) {
+      where.price = MoreThanOrEqual(filter.minPrice);
+    } else if (filter?.maxPrice !== undefined) {
+      where.price = LessThanOrEqual(filter.maxPrice);
     }
 
-    // Ordena del más nuevo al más viejo
-    qb.orderBy('product.createdAt', 'DESC');
+    // Filtro por stock — igual que precio
+    if (filter?.minStock !== undefined && filter?.maxStock !== undefined) {
+      where.stock = Between(filter.minStock, filter.maxStock);
+    } else if (filter?.minStock !== undefined) {
+      where.stock = MoreThanOrEqual(filter.minStock);
+    } else if (filter?.maxStock !== undefined) {
+      where.stock = LessThanOrEqual(filter.maxStock);
+    }
 
-    // Ejecuta la consulta armada y retorna el array
-    return qb.getMany();
+    // Repository.find con where y order — todo con Repository, nada de QueryBuilder
+    return this.productsRepository.find({
+      where,
+      order: { createdAt: 'DESC' },
+    });
   }
 
   /**

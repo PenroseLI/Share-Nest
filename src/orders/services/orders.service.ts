@@ -4,12 +4,12 @@
  * Este es el servicio más completo del seed. Demuestra:
  * - Relaciones: Order N:1 User, Order 1:N OrderItem N:1 Product
  * - Transacción con QueryRunner para que todo sea atómico (todo o nada)
- * - Filtros simples con QueryBuilder
+ * - Filtros simples SOLO con Repository (sin QueryBuilder)
  *
  * Concepto clave: Crear una orden toca 2 tablas (orders y products.stock)
  * y debe ser atómico: si falla el stock de un producto, no debe quedar
  * la orden a medias ni descontar stock de los otros productos. Por eso
- * usamos transacción.
+ * usamos transacción (pero para lecturas/filtros solo Repository).
  */
 
 import {
@@ -18,7 +18,7 @@ import {
   NotFoundException, // 404 — no existe
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, FindOptionsWhere, Repository } from 'typeorm';
 import { CreateOrderDto } from '../dto/create-order.dto';
 import { FilterOrderDto } from '../dto/filter-order.dto';
 import { UpdateOrderDto } from '../dto/update-order.dto';
@@ -30,8 +30,8 @@ import { Product } from '../../products/entities/product.entity';
 @Injectable()
 export class OrdersService {
   // Necesitamos 2 cosas:
-  // - ordersRepository para lecturas simples (findAll, findOne)
-  // - dataSource para crear QueryRunner y hacer transacciones
+  // - ordersRepository para lecturas simples (findAll, findOne) — SOLO Repository
+  // - dataSource para crear QueryRunner y hacer transacciones (solo en create/cancel)
   constructor(
     @InjectRepository(Order)
     private readonly ordersRepository: Repository<Order>,
@@ -39,19 +39,20 @@ export class OrdersService {
   ) {}
 
   // ===================================================================
-  // CREAR ORDEN — con transacción didáctica paso a paso
+  // CREAR ORDEN — con transacción didáctica paso a paso (TypeORM, no SQL raro)
   // ===================================================================
   /**
    * POST /orders  { userId, items:[{productId, quantity}] }
    * Pasos:
-   * 1. Validar usuario existe y activo
+   * 1. Validar usuario existe y activo (con repository via queryRunner.manager)
    * 2. Por cada item: validar producto existe/activo, stock suficiente,
    *    sumar al total y descontar stock (dentro de la transacción)
    * 3. Crear Order con items (cascade) y guardar
    * 4. Commit → todo OK o Rollback → nada se guarda
+   * Todo usa manager.findOneBy / save — son Repository, solo que dentro de transacción.
    */
   async create(createOrderDto: CreateOrderDto): Promise<Order> {
-    // QueryRunner = conexión dedicada para esta transacción
+    // QueryRunner = conexión dedicada para esta transacción (TypeORM, no SQL)
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect(); // pide una conexión del pool
     await queryRunner.startTransaction(); // abre transacción (BEGIN)
@@ -73,7 +74,7 @@ export class OrdersService {
       const orderItems: Partial<OrderItem>[] = []; // lo que irá dentro de Order
 
       for (const itemDto of createOrderDto.items) {
-        // ¿Existe el producto y está activo?
+        // ¿Existe el producto y está activo? (Repository)
         const product = await queryRunner.manager.findOneBy(Product, {
           id: itemDto.productId,
           isActive: true,
@@ -98,7 +99,7 @@ export class OrdersService {
         // Descontar stock AHORA, dentro de la transacción
         // Si luego algo falla y hacemos rollback, este descuento se deshace
         product.stock -= itemDto.quantity;
-        await queryRunner.manager.save(Product, product);
+        await queryRunner.manager.save(Product, product); // Repository.save dentro de transacción
 
         // Preparar el item que irá dentro de la orden
         orderItems.push({
@@ -136,33 +137,35 @@ export class OrdersService {
   }
 
   // ===================================================================
-  // LECTURAS CON FILTROS SIMPLES (Rama 4)
+  // LECTURAS CON FILTROS SIMPLES — SOLO Repository (sin QueryBuilder)
   // ===================================================================
   /**
    * GET /orders?status=PENDING&userId=1234567890
    * Filtros opcionales. Si no mandan nada, lista todo.
-   * Usa QueryBuilder con leftJoin para traer user y items.product en una sola query.
+   * Solo usa Repository.find() con where y relations — nada de query raro.
+   * Ej: ?status=PENDING → where.status = PENDING
    */
   async findAll(filter?: FilterOrderDto): Promise<Order[]> {
-    const qb = this.ordersRepository
-      .createQueryBuilder('order')
-      .leftJoinAndSelect('order.items', 'item')
-      .leftJoinAndSelect('item.product', 'product') // eager ya lo trae, pero lo dejamos explícito
-      .leftJoinAndSelect('order.user', 'user');
-
+    // Armamos el where solo con lo que viene en la URL
+    const where: FindOptionsWhere<Order> = {};
     if (filter?.status) {
-      qb.andWhere('order.status = :status', { status: filter.status });
+      where.status = filter.status;
     }
     if (filter?.userId) {
-      qb.andWhere('order.userId = :userId', { userId: filter.userId });
+      where.userId = filter.userId;
     }
 
-    qb.orderBy('order.createdAt', 'DESC');
-    return qb.getMany();
+    // Repository.find con where, relations y order — todo con Repository
+    return this.ordersRepository.find({
+      where,
+      relations: ['items', 'user'], // trae user y items (product viene eager)
+      order: { createdAt: 'DESC' },
+    });
   }
 
   /**
    * GET /orders/:id — detalle con user e items
+   * Usa Repository.findOne con relations
    */
   async findOne(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
@@ -178,6 +181,7 @@ export class OrdersService {
   /**
    * GET /orders/user/:userId — atajo para ver las órdenes de un usuario
    * Es lo mismo que GET /orders?userId=... pero con URL limpia
+   * Solo Repository.find con where
    */
   findByUser(userId: string): Promise<Order[]> {
     return this.ordersRepository.find({
@@ -208,7 +212,7 @@ export class OrdersService {
         return this.cancel(id); // cancela con transacción y restaura stock
       }
       order.status = dto.status;
-      return this.ordersRepository.save(order);
+      return this.ordersRepository.save(order); // Repository.save
     }
     return order;
   }
@@ -216,6 +220,7 @@ export class OrdersService {
   /**
    * PUT /orders/:id/cancel — cancela y restaura stock en transacción
    * No se puede cancelar una PAID o ya CANCELLED.
+   * Usa QueryRunner solo para la transacción, pero dentro todo es Repository (manager.findOneBy/save)
    */
   async cancel(id: string): Promise<Order> {
     const queryRunner = this.dataSource.createQueryRunner();
@@ -236,7 +241,7 @@ export class OrdersService {
         throw new BadRequestException('No se puede cancelar una orden pagada');
       }
 
-      // Devolver stock a cada producto
+      // Devolver stock a cada producto (Repository)
       for (const item of order.items) {
         const product = await queryRunner.manager.findOneBy(Product, {
           id: item.productId,
@@ -269,6 +274,6 @@ export class OrdersService {
     if (order.status === OrderStatus.PENDING) {
       await this.cancel(id);
     }
-    await this.ordersRepository.remove(order);
+    await this.ordersRepository.remove(order); // Repository.remove
   }
 }
