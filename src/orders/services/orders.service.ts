@@ -1,24 +1,22 @@
 /**
- * OrdersService — Tienda con relaciones + transacciones (didáctico)
+ * OrdersService — Tienda con relaciones (solo Repository, nada raro)
  * ---------------------------------------------------------------
- * Este es el servicio más completo del seed. Demuestra:
- * - Relaciones: Order N:1 User, Order 1:N OrderItem N:1 Product
- * - Transacción con QueryRunner para que todo sea atómico (todo o nada)
- * - Filtros simples SOLO con Repository (sin QueryBuilder)
+ * Todo es Repository — cada entidad tiene su repositorio inyectado.
+ * No usamos QueryRunner ni manager, solo:
+ *   usersRepository, productsRepository, ordersRepository
+ * que vienen de TypeOrmModule.forFeature([...]) en orders.module.ts
  *
- * Concepto clave: Crear una orden toca 2 tablas (orders y products.stock)
- * y debe ser atómico: si falla el stock de un producto, no debe quedar
- * la orden a medias ni descontar stock de los otros productos. Por eso
- * usamos transacción (pero para lecturas/filtros solo Repository).
+ * Así el estudiante ve el patrón más simple de TypeORM:
+ *   repository.findOneBy / find / create / save / remove
  */
 
 import {
-  BadRequestException, // 400 — dato inválido (stock insuficiente, estado inválido)
+  BadRequestException,
   Injectable,
-  NotFoundException, // 404 — no existe
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, Repository } from 'typeorm';
 import { CreateOrderDto } from '../dto/create-order.dto';
 import { FilterOrderDto } from '../dto/filter-order.dto';
 import { UpdateOrderDto } from '../dto/update-order.dto';
@@ -29,148 +27,118 @@ import { Product } from '../../products/entities/product.entity';
 
 @Injectable()
 export class OrdersService {
-  // Necesitamos 2 cosas:
-  // - ordersRepository para lecturas simples (findAll, findOne) — SOLO Repository
-  // - dataSource para crear QueryRunner y hacer transacciones (solo en create/cancel)
+  // Cada entidad tiene su Repository — solo eso, nada de DataSource
   constructor(
     @InjectRepository(Order)
     private readonly ordersRepository: Repository<Order>,
-    private readonly dataSource: DataSource,
+    @InjectRepository(OrderItem)
+    private readonly orderItemsRepository: Repository<OrderItem>,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
+    @InjectRepository(Product)
+    private readonly productsRepository: Repository<Product>,
   ) {}
 
   // ===================================================================
-  // CREAR ORDEN — con transacción didáctica paso a paso (TypeORM, no SQL raro)
+  // CREAR ORDEN — solo con Repository, paso a paso y sencillo
   // ===================================================================
   /**
    * POST /orders  { userId, items:[{productId, quantity}] }
-   * Pasos:
-   * 1. Validar usuario existe y activo (con repository via queryRunner.manager)
-   * 2. Por cada item: validar producto existe/activo, stock suficiente,
-   *    sumar al total y descontar stock (dentro de la transacción)
-   * 3. Crear Order con items (cascade) y guardar
-   * 4. Commit → todo OK o Rollback → nada se guarda
-   * Todo usa manager.findOneBy / save — son Repository, solo que dentro de transacción.
+   * 1. Buscar usuario con usersRepository.findOneBy (si no existe → 404)
+   * 2. Por cada item: buscar producto con productsRepository.findOneBy,
+   *    validar stock, sumar total y descontar stock con productsRepository.save
+   * 3. Crear Order con items y guardar con ordersRepository.save (cascade guarda items)
+   * Todo con Repository, sin QueryRunner. En producción se usaría transacción,
+   * aquí lo dejamos simple para la clase.
    */
   async create(createOrderDto: CreateOrderDto): Promise<Order> {
-    // QueryRunner = conexión dedicada para esta transacción (TypeORM, no SQL)
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect(); // pide una conexión del pool
-    await queryRunner.startTransaction(); // abre transacción (BEGIN)
+    // 1. Usuario debe existir y estar activo
+    const user = await this.usersRepository.findOneBy({
+      id: createOrderDto.userId,
+      isActive: true,
+    });
+    if (!user) {
+      throw new NotFoundException(
+        `El usuario con id ${createOrderDto.userId} no existe o está inactivo`,
+      );
+    }
 
-    try {
-      // --- 1. Usuario debe existir y estar activo ---
-      const user = await queryRunner.manager.findOneBy(User, {
-        id: createOrderDto.userId,
+    // 2. Validar productos y armar items
+    let total = 0;
+    const orderItems: Partial<OrderItem>[] = [];
+
+    for (const itemDto of createOrderDto.items) {
+      // Buscar producto con Repository
+      const product = await this.productsRepository.findOneBy({
+        id: itemDto.productId,
         isActive: true,
       });
-      if (!user) {
+      if (!product) {
         throw new NotFoundException(
-          `El usuario con id ${createOrderDto.userId} no existe o está inactivo`,
+          `El producto con id ${itemDto.productId} no existe o está inactivo`,
         );
       }
 
-      // --- 2. Validar cada producto, calcular total y descontar stock ---
-      let total = 0;
-      const orderItems: Partial<OrderItem>[] = []; // lo que irá dentro de Order
-
-      for (const itemDto of createOrderDto.items) {
-        // ¿Existe el producto y está activo? (Repository)
-        const product = await queryRunner.manager.findOneBy(Product, {
-          id: itemDto.productId,
-          isActive: true,
-        });
-        if (!product) {
-          throw new NotFoundException(
-            `El producto con id ${itemDto.productId} no existe o está inactivo`,
-          );
-        }
-
-        // ¿Hay stock suficiente?
-        if (product.stock < itemDto.quantity) {
-          throw new BadRequestException(
-            `Stock insuficiente para ${product.name}: disponible ${product.stock}, solicitado ${itemDto.quantity}`,
-          );
-        }
-
-        // Precio al momento de la compra (snapshot)
-        const unitPrice = Number(product.price);
-        total += unitPrice * itemDto.quantity;
-
-        // Descontar stock AHORA, dentro de la transacción
-        // Si luego algo falla y hacemos rollback, este descuento se deshace
-        product.stock -= itemDto.quantity;
-        await queryRunner.manager.save(Product, product); // Repository.save dentro de transacción
-
-        // Preparar el item que irá dentro de la orden
-        orderItems.push({
-          productId: product.id,
-          quantity: itemDto.quantity,
-          unitPrice, // guardamos el precio histórico
-        });
+      // Validar stock
+      if (product.stock < itemDto.quantity) {
+        throw new BadRequestException(
+          `Stock insuficiente para ${product.name}: disponible ${product.stock}, solicitado ${itemDto.quantity}`,
+        );
       }
 
-      // --- 3. Crear la orden con sus items (cascade) ---
-      // Gracias a cascade:true en Order.items, al guardar Order se guardan los items
-      const order = queryRunner.manager.create(Order, {
-        userId: user.id, // FK explícita
-        total: Number(total.toFixed(2)), // 2 decimales
-        status: OrderStatus.PENDING, // toda orden nace PENDING
-        items: orderItems as OrderItem[],
+      // Calcular total con precio actual (snapshot)
+      const unitPrice = Number(product.price);
+      total += unitPrice * itemDto.quantity;
+
+      // Descontar stock con Repository.save
+      product.stock -= itemDto.quantity;
+      await this.productsRepository.save(product);
+
+      orderItems.push({
+        productId: product.id,
+        quantity: itemDto.quantity,
+        unitPrice,
       });
-
-      const savedOrder = await queryRunner.manager.save(Order, order);
-
-      // --- 4. Todo OK → confirmar ---
-      await queryRunner.commitTransaction();
-
-      // Retornamos la orden completa con relaciones (user y items.product)
-      // findOne usa relations, así el cliente ve el detalle
-      return this.findOne(savedOrder.id);
-    } catch (error) {
-      // Algo falló → deshacer todo (stock, orden, items)
-      await queryRunner.rollbackTransaction();
-      throw error; // Nest lo convierte en 404/400 según el throw
-    } finally {
-      // Siempre liberar la conexión, haya ido bien o mal
-      await queryRunner.release();
     }
+
+    // 3. Crear orden con items — cascade guarda los items automáticamente
+    const order = this.ordersRepository.create({
+      userId: user.id,
+      total: Number(total.toFixed(2)),
+      status: OrderStatus.PENDING,
+      items: orderItems as OrderItem[],
+    });
+
+    const savedOrder = await this.ordersRepository.save(order);
+
+    // 4. Retornar completa con relaciones
+    return this.findOne(savedOrder.id);
   }
 
   // ===================================================================
-  // LECTURAS CON FILTROS SIMPLES — SOLO Repository (sin QueryBuilder)
+  // LECTURAS — solo Repository
   // ===================================================================
   /**
-   * GET /orders?status=PENDING&userId=1234567890
-   * Filtros opcionales. Si no mandan nada, lista todo.
-   * Solo usa Repository.find() con where y relations — nada de query raro.
-   * Ej: ?status=PENDING → where.status = PENDING
+   * GET /orders?status=PENDING&userId=123
+   * Solo Repository.find con where y relations
    */
   async findAll(filter?: FilterOrderDto): Promise<Order[]> {
-    // Armamos el where solo con lo que viene en la URL
     const where: FindOptionsWhere<Order> = {};
-    if (filter?.status) {
-      where.status = filter.status;
-    }
-    if (filter?.userId) {
-      where.userId = filter.userId;
-    }
+    if (filter?.status) where.status = filter.status;
+    if (filter?.userId) where.userId = filter.userId;
 
-    // Repository.find con where, relations y order — todo con Repository
     return this.ordersRepository.find({
       where,
-      relations: ['items', 'user'], // trae user y items (product viene eager)
+      relations: ['items', 'user'],
       order: { createdAt: 'DESC' },
     });
   }
 
-  /**
-   * GET /orders/:id — detalle con user e items
-   * Usa Repository.findOne con relations
-   */
+  /** GET /orders/:id */
   async findOne(id: string): Promise<Order> {
     const order = await this.ordersRepository.findOne({
       where: { id },
-      relations: ['items', 'user'], // trae relaciones
+      relations: ['items', 'user'],
     });
     if (!order) {
       throw new NotFoundException(`La orden con id ${id} no existe`);
@@ -178,11 +146,7 @@ export class OrdersService {
     return order;
   }
 
-  /**
-   * GET /orders/user/:userId — atajo para ver las órdenes de un usuario
-   * Es lo mismo que GET /orders?userId=... pero con URL limpia
-   * Solo Repository.find con where
-   */
+  /** GET /orders/user/:userId */
   findByUser(userId: string): Promise<Order[]> {
     return this.ordersRepository.find({
       where: { userId },
@@ -192,88 +156,70 @@ export class OrdersService {
   }
 
   // ===================================================================
-  // ACTUALIZAR ESTADO
+  // ACTUALIZAR Y CANCELAR — solo Repository
   // ===================================================================
   /**
-   * PUT /orders/:id  { status: "PAID" | "CANCELLED" }
-   * Solo se permite PENDING → PAID o CANCELLED.
-   * Si es CANCELLED, llama a cancel() que restaura stock.
+   * PUT /orders/:id { status }
+   * Solo PENDING → PAID o CANCELLED
    */
   async update(id: string, dto: UpdateOrderDto): Promise<Order> {
     const order = await this.findOne(id);
     if (dto.status && dto.status !== order.status) {
-      // Solo desde PENDING se puede cambiar
       if (order.status !== OrderStatus.PENDING) {
         throw new BadRequestException(
           `Solo se puede cambiar estado desde PENDING, estado actual: ${order.status}`,
         );
       }
       if (dto.status === OrderStatus.CANCELLED) {
-        return this.cancel(id); // cancela con transacción y restaura stock
+        return this.cancel(id);
       }
       order.status = dto.status;
-      return this.ordersRepository.save(order); // Repository.save
+      return this.ordersRepository.save(order);
     }
     return order;
   }
 
   /**
-   * PUT /orders/:id/cancel — cancela y restaura stock en transacción
-   * No se puede cancelar una PAID o ya CANCELLED.
-   * Usa QueryRunner solo para la transacción, pero dentro todo es Repository (manager.findOneBy/save)
+   * PUT /orders/:id/cancel — restaura stock con Repository
+   * No usa QueryRunner, solo Repository.findOne y save en loop.
    */
   async cancel(id: string): Promise<Order> {
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-    try {
-      const order = await queryRunner.manager.findOne(Order, {
-        where: { id },
-        relations: ['items'],
-      });
-      if (!order) {
-        throw new NotFoundException(`La orden con id ${id} no existe`);
-      }
-      if (order.status === OrderStatus.CANCELLED) {
-        throw new BadRequestException('La orden ya está cancelada');
-      }
-      if (order.status === OrderStatus.PAID) {
-        throw new BadRequestException('No se puede cancelar una orden pagada');
-      }
-
-      // Devolver stock a cada producto (Repository)
-      for (const item of order.items) {
-        const product = await queryRunner.manager.findOneBy(Product, {
-          id: item.productId,
-        });
-        if (product) {
-          product.stock += item.quantity;
-          await queryRunner.manager.save(Product, product);
-        }
-      }
-
-      order.status = OrderStatus.CANCELLED;
-      await queryRunner.manager.save(Order, order);
-      await queryRunner.commitTransaction();
-      return this.findOne(id);
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      throw error;
-    } finally {
-      await queryRunner.release();
+    const order = await this.ordersRepository.findOne({
+      where: { id },
+      relations: ['items'],
+    });
+    if (!order) {
+      throw new NotFoundException(`La orden con id ${id} no existe`);
     }
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('La orden ya está cancelada');
+    }
+    if (order.status === OrderStatus.PAID) {
+      throw new BadRequestException('No se puede cancelar una orden pagada');
+    }
+
+    // Restaurar stock con productsRepository
+    for (const item of order.items) {
+      const product = await this.productsRepository.findOneBy({
+        id: item.productId,
+      });
+      if (product) {
+        product.stock += item.quantity;
+        await this.productsRepository.save(product);
+      }
+    }
+
+    order.status = OrderStatus.CANCELLED;
+    await this.ordersRepository.save(order);
+    return this.findOne(id);
   }
 
-  /**
-   * DELETE /orders/:id — borrado hard didáctico
-   * En producción se prefiere soft delete o cancel, aquí borra real.
-   * Si estaba PENDING, primero restaura stock vía cancel().
-   */
+  /** DELETE /orders/:id */
   async remove(id: string): Promise<void> {
     const order = await this.findOne(id);
     if (order.status === OrderStatus.PENDING) {
-      await this.cancel(id);
+      await this.cancel(id); // restaura stock primero
     }
-    await this.ordersRepository.remove(order); // Repository.remove
+    await this.ordersRepository.remove(order);
   }
 }
