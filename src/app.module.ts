@@ -4,8 +4,6 @@ import { TypeOrmModule, type TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { validateEnvironment } from './config/env.validation';
 import { ListingsModule } from './listings/listings.module';
 import { BookingsModule } from './bookings/bookings.module';
-import { OrdersModule } from './orders/orders.module';
-import { ProductsModule } from './products/products.module';
 import { UsersModule } from './users/users.module';
 
 
@@ -57,8 +55,6 @@ import { UsersModule } from './users/users.module';
       },
     }),
     UsersModule,
-    ProductsModule,
-    OrdersModule,
     ListingsModule,
     BookingsModule,
   ],
