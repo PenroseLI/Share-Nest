@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule, type TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { validateEnvironment } from './config/env.validation';
+import { ListingsModule } from './listings/listings.module';
 import { OrdersModule } from './orders/orders.module';
 import { ProductsModule } from './products/products.module';
 import { UsersModule } from './users/users.module';
+
 
 @Module({
   imports: [
@@ -55,6 +57,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     ProductsModule,
     OrdersModule,
+    ListingsModule,
   ],
 })
 export class AppModule {}
