@@ -6,7 +6,7 @@ export class FilterBookingDto {
   @IsEnum(BookingStatus)
   status?: BookingStatus;
 
-  // Filtra por inquilino (mismo formato que User.id 5-20 dígitos)
+  // Filtra por inquilino 
   @IsOptional()
   @IsString()
   @Matches(/^\d{5,20}$/)
